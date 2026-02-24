@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consolidador de CSV (Cabeçalhos Repetidos)</title>
+    <link rel="stylesheet" href="style.css">
+    
+</head>
+<body>
+
+    <div class="wrap">
+        <div class="card">
+        <h1>Consolidador de CSV com Cabeçalhos Repetidos</h1>
+        <div class="sub">
+            Importe o CSV do sistema (separador “;”), clique em <b>Iniciar limpeza</b> e baixe os arquivos resultantes.
+        </div>
+
+        <div class="row">
+            <input id="file" type="file" accept=".csv" />
+            <button id="start" class="primary" disabled>Iniciar limpeza</button>
+            <div class="progress" aria-hidden="true">
+            <div id="bar" class="bar"></div>
+            </div>
+        </div>
+
+        <div id="status" class="status">Aguardando arquivo…</div>
+
+        <div class="row row-downloads">
+            <button id="dlCsv" class="success" disabled>Baixar CSV</button>
+            <button id="dlXlsx" class="success" disabled>Baixar Excel</button>
+        </div>
+
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+    
+</body>
+</html>
