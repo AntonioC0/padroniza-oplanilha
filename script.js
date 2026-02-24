@@ -3,7 +3,7 @@ const CSV_DELIMITER = ';';                           // Troque para ',' se o seu
 const FILENAME_BASE = 'Quebra de Transporte';
 
 // === Manter apenas estas colunas (ordem e nomes exatos) ===
-const KEEP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'DIF'];
+const KEEP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC'];
 
 // Nomes da planilha/arquivo Excel
 const EXCEL_SHEET = 'Base_Limpa'; // cria planilha e Tabela "Tabela_dados" dentro dela
@@ -74,7 +74,7 @@ window.addEventListener('load', async () => {
 
 // =================== Parsing/Tratamento ==============
 
-// Normaliza chave de coluna (para casar nomes equivalentes como "DIF", "Tot_Desc", "tot desc")
+// Normaliza chave de coluna (para casar nomes equivalentes como "TOT.DESC", "Tot_Desc", "tot desc")
 const normKey = (s) => String(s || '')
   .toUpperCase()
   .replace(/\s+/g, '')
@@ -165,7 +165,7 @@ function normalizeNullsToZero(rows, columns) {
 
 // ------------- Agregação por DESCRICAO + UNID.ORIGEM + UNID.DESTINO -------------
 const GROUP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO'];
-const SUM_COL    = 'DIF';
+const SUM_COL    = 'TOT.DESC';
 
 function aggregateByGroup(rows) {
   const map = new Map();
@@ -265,7 +265,7 @@ async function toExcelWithTable(columns, rows, tableName = 'Tabela_dados') {
   const colIndex = (name) => columns.findIndex(c => c.toUpperCase() === name.toUpperCase()) + 1;
   const idxData = colIndex('DATA');
   if (idxData > 0) ws.getColumn(idxData).numFmt = 'dd/mm/yyyy';
-  const idxTotDesc = colIndex('DIF');
+  const idxTotDesc = colIndex('TOT.DESC');
   if (idxTotDesc > 0) ws.getColumn(idxTotDesc).numFmt = '#,##0.00';
 
   const buf = await wb.xlsx.writeBuffer();
@@ -372,7 +372,7 @@ $start.addEventListener('click', async () => {
       return obj;
     });
 
-    // 3) AGREGAÇÃO (DESCRICAO + UNID.ORIGEM + UNID.DESTINO) somando DIF com sinal
+    // 3) AGREGAÇÃO (DESCRICAO + UNID.ORIGEM + UNID.DESTINO) somando TOT.DESC com sinal
     const outRows = aggregateByGroup(projectedRows);
 
     // 4) XLSX com Tabela (se ExcelJS disponível)
