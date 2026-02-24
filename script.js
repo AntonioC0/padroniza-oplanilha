@@ -1,8 +1,12 @@
 // =================== Configurações ===================
 const CSV_DELIMITER = ';';                           // Troque para ',' se o seu CSV usar vírgula
-const FILENAME_BASE = 'Base_Limpa - quebra de transporte';
+const FILENAME_BASE = 'Quebra de Transporte';
+
+// === Manter apenas estas colunas (ordem e nomes exatos) ===
+const KEEP_COLS = ['DATA', 'DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC'];
+
+// Nomes da planilha/arquivo Excel
 const EXCEL_SHEET   = 'Base_Limpa';
-const TABLE_NAME    = 'Tabela_dados';
 
 // =================== Elementos da UI =================
 const $file   = document.getElementById('file');
@@ -28,9 +32,16 @@ function setProgress(value, max = 100) {
 }
 
 // =================== Parsing/Tratamento ==============
+
+// Normaliza chave de coluna (para casar nomes equivalentes como "TOT.DESC", "Tot_Desc", "tot desc")
+const normKey = (s) => String(s || '')
+  .toUpperCase()
+  .replace(/\s+/g, '')
+  .replace(/[.\-_]/g, '');
+
 function parseCSVLine(line, delimiter = CSV_DELIMITER) {
   // Parser simples com suporte a aspas duplas
- const out = [];
+  const out = [];
   let cur = '';
   let inQuotes = false;
   for (let i = 0; i < line.length; i++) {
@@ -94,7 +105,7 @@ function consolidateRows(rows, preferFirst = ['DATA','NUMCMP','PRT']) {
 }
 
 function normalizeNullsToZero(rows, columns) {
-  // Converte NaN/NaT/None/''/"nan"/"NULL" -> 0 em todas as colunas
+  // Converte NaN/NaT/None/''/"nan"/"NULL" -> 0
   const NULL_STRS = new Set(['', 'nan', 'NaN', 'NAN', 'None', 'NULL', 'null']);
   return rows.map(r => {
     const o = {};
@@ -128,75 +139,24 @@ function toCSV(columns, rows, delimiter = CSV_DELIMITER) {
   return out;
 }
 
-function colLetter(n) {
-  let s = '';
-  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - 1) / 26 | 0; }
-  return s;
-}
-
-// Gera nomes únicos só para o cabeçalho do Excel (CSV mantém original)
-function uniqueForExcel(cols) {
-  const seen = {};
-  return cols.map(name => {
-    let n = String(name || '').trim();
-    if (!n) n = 'COLUNA';
-    if (seen[n] === undefined) { seen[n] = 0; return n; }
-    seen[n] += 1; return `${n}_${seen[n]}`;
-  });
-}
-
-// ===== Criação do Excel com Tabela 'Tabela_dados' =====
-async function toExcel(columns, rows) {
+async function toExcelSimple(columns, rows) {
   if (!window.ExcelJS) throw new Error('ExcelJS não disponível.');
-
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(EXCEL_SHEET);
 
-  // Cabeçalhos exclusivos para Excel (evita erro por duplicidade)
-  const columnsExcel = uniqueForExcel(columns);
+  // Cabeçalho + dados
+  ws.addRow(columns);
+  rows.forEach(r => ws.addRow(columns.map(c => r[c])));
 
-  // Dados da tabela: cada linha vira um array na ordem de 'columns'
-  const tableRows = rows.map(r => columns.map(c => r[c]));
-
-  if (typeof ws.addTable !== 'function') {
-    throw new Error('worksheet.addTable() não existe nesta versão do ExcelJS. Atualize lib/exceljs.min.js (4.x).');
-  }
-
-  // Define o intervalo total da tabela
-  const ref = `A1:${colLetter(columnsExcel.length)}${tableRows.length + 1}`;
-
-  // Cria a Tabela (o Excel preencherá cabeçalho + linhas)
-  ws.addTable({
-    name: TABLE_NAME,                 // <<<<<< Tabela_dados
-    ref,
-    headerRow: true,
-    totalsRow: false,
-    style: { theme: 'TableStyleMedium9', showRowStripes: true },
-    columns: columnsExcel.map(name => ({ name })),
-    rows: tableRows
-  });
-
-  // (Opcional) confirma a tabela quando a API expõe getTable()
-  try {
-    if (typeof ws.getTable === 'function') {
-      const tbl = ws.getTable(TABLE_NAME);
-      if (tbl && typeof tbl.commit === 'function') tbl.commit();
-    }
-  } catch (e) {
-    // silencioso: algumas builds não expõem getTable/commit
-  }
-
-  // Largura automática
-  columnsExcel.forEach((c, i) => {
+  // Largura automática básica
+  columns.forEach((c, i) => {
     const col = ws.getColumn(i + 1);
     const maxLen = Math.max(
       String(c).length,
-      ...tableRows.slice(0, 200).map(r => String(r[i] ?? '').length)
+      ...rows.slice(0, 200).map(r => String(r[c] ?? '').length)
     );
     col.width = Math.min(60, Math.max(10, Math.ceil(maxLen * 0.9)));
   });
-
-  console.log(`Tabela '${TABLE_NAME}' criada com ${tableRows.length} linhas e ${columnsExcel.length} colunas em '${EXCEL_SHEET}'.`);
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], {
@@ -245,7 +205,7 @@ async function processFile(file) {
     setProgress(i + 1, total);
   }
 
-  // Consolida e trata
+  // Consolida e trata (antes de projetar as 5 colunas)
   let { columns, rows: aligned } = consolidateRows(rows);
   aligned = normalizeNumericColumns(aligned, columns);
   aligned = normalizeNullsToZero(aligned, columns);
@@ -283,24 +243,39 @@ $start.addEventListener('click', async () => {
   setStatus('Processando… isso pode levar alguns segundos em arquivos grandes.');
 
   try {
+    // 1) Trata o CSV “bagunçado” em blocos
     const { columns, rows } = await processFile($file.files[0]);
 
-    // CSV
-    const csvText = toCSV(columns, rows, CSV_DELIMITER);
+    // 2) === PROJEÇÃO: mantém só as 5 colunas desejadas, na ordem pedida ===
+    const present = new Map(columns.map(c => [normKey(c), c]));  // mapa: chave normalizada -> nome real
+    const outCols = [...KEEP_COLS];                               // nomes finais
+    const outRows = rows.map(r => {
+      const obj = {};
+      for (const wanted of KEEP_COLS) {
+        const actual = present.get(normKey(wanted));              // nome real no arquivo equivalente
+        const val = actual ? r[actual] : 0;
+        obj[wanted] = (val === undefined || val === null || String(val).trim() === '') ? 0 : val;
+      }
+      return obj;
+    });
+
+    // 3) CSV (apenas as 5 colunas)
+    const csvText = toCSV(outCols, outRows, CSV_DELIMITER);
     lastCSVBlob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
 
-    // Excel (se disponível)
+    // 4) Excel simples (sem Tabela, como você fará manualmente)
     if (window.ExcelJS) {
-      lastXLSXBlob = await toExcel(columns, rows);
+      lastXLSXBlob = await toExcelSimple(outCols, outRows);
       $dlXlsx.disabled = false;
       $dlXlsx.style.display = '';
+      setStatus(`Finalizado! Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
     } else {
       lastXLSXBlob = null;
       $dlXlsx.style.display = 'none';
+      setStatus(`Finalizado! Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
     }
 
     $dlCsv.disabled = false;
-    setStatus(`Finalizado! Linhas: <b>${rows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${columns.length}</b>.`, 'ok');
     setProgress(100, 100);
   } catch (err) {
     console.error(err);
