@@ -6,7 +6,7 @@ const FILENAME_BASE = 'Quebra de Transporte';
 const KEEP_COLS = ['DATA', 'DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC'];
 
 // Nomes da planilha/arquivo Excel
-const EXCEL_SHEET   = 'Base_Limpa';
+const EXCEL_SHEET = 'Base_Limpa'; // cria planilha e Tabela "Tabela_dados" dentro dela
 
 // =================== Elementos da UI =================
 const $file   = document.getElementById('file');
@@ -16,10 +16,43 @@ const $status = document.getElementById('status');
 const $dlCsv  = document.getElementById('dlCsv');
 const $dlXlsx = document.getElementById('dlXlsx');
 
-// Esconde botão Excel se ExcelJS não estiver disponível
-window.addEventListener('load', () => {
-  if (!window.ExcelJS) $dlXlsx.style.display = 'none';
-});
+// =================== Loader dinâmico do ExcelJS (sem HTML) ===================
+let exceljsLoading = null;
+async function ensureExcelJS() {
+  if (window.ExcelJS) return 'already-loaded';
+  if (exceljsLoading) return exceljsLoading;
+
+  // CDN primário (pode trocar para unpkg se preferir)
+  const CDN = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+
+  exceljsLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = CDN;
+    s.async = true;
+    s.onload = () => {
+      // Checagens mínimas
+      const ok = !!(window.ExcelJS && window.ExcelJS.Workbook);
+      if (!ok) {
+        reject(new Error('ExcelJS carregado mas objeto inválido.'));
+        return;
+      }
+      try {
+        // Verifica suporte a addTable
+        const testWb = new window.ExcelJS.Workbook();
+        const testWs = testWb.addWorksheet('test');
+        const supportsTable = typeof testWs.addTable === 'function';
+        console.log('[ExcelJS] carregado. Suporte a Table:', supportsTable);
+      } catch (e) {
+        console.warn('[ExcelJS] carregado, mas não foi possível inspecionar addTable:', e);
+      }
+      resolve('loaded');
+    };
+    s.onerror = () => reject(new Error('Falha ao baixar ExcelJS do CDN.'));
+    document.head.appendChild(s);
+  });
+
+  return exceljsLoading;
+}
 
 // =================== Helpers de UI ===================
 function setStatus(html, cls = '') {
@@ -30,6 +63,17 @@ function setProgress(value, max = 100) {
   const pct = Math.max(0, Math.min(100, Math.round((value / max) * 100)));
   $bar.style.width = pct + '%';
 }
+
+// Na carga da página, tenta baixar o ExcelJS e exibir o botão XLSX
+window.addEventListener('load', async () => {
+  try {
+    await ensureExcelJS();           // baixa ExcelJS
+    $dlXlsx.style.display = '';      // mostra botão XLSX
+  } catch (e) {
+    console.warn('[ExcelJS] não carregado:', e.message);
+    $dlXlsx.style.display = 'none';  // mantém oculto se falhar
+  }
+});
 
 // =================== Parsing/Tratamento ==============
 
@@ -139,16 +183,69 @@ function toCSV(columns, rows, delimiter = CSV_DELIMITER) {
   return out;
 }
 
-async function toExcelSimple(columns, rows) {
+// Helper: letra da coluna (1->A etc.)
+function excelCol(n) {
+  let s = '';
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+// ============== Excel: cria planilha + Tabela (+fallback) ==============
+async function toExcelWithTable(columns, rows, tableName = 'Tabela_dados') {
   if (!window.ExcelJS) throw new Error('ExcelJS não disponível.');
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(EXCEL_SHEET);
 
-  // Cabeçalho + dados
+  // Escreve cabeçalho + dados (garante dados no WS mesmo se addTable falhar)
   ws.addRow(columns);
   rows.forEach(r => ws.addRow(columns.map(c => r[c])));
 
-  // Largura automática básica
+  const lastRow = rows.length + 1; // +1 cabeçalho
+  const lastColLetter = excelCol(columns.length);
+  const fullRange = `A1:${lastColLetter}${lastRow}`;
+
+  // Tenta Tabela oficial
+  try {
+    const supportsTable = typeof ws.addTable === 'function';
+    if (supportsTable) {
+      try {
+        if (ws.getTable && ws.getTable(tableName)) {
+          ws.getTable(tableName).remove?.();
+        }
+      } catch (_) {}
+
+      ws.addTable({
+        name: tableName,
+        ref: 'A1',
+        headerRow: true,
+        totalsRow: false,
+        style: {
+          theme: 'TableStyleMedium9',
+          showRowStripes: true,
+          showColumnStripes: false,
+        },
+        columns: columns.map(name => ({ name, filterButton: true })),
+        rows: rows.map(r => columns.map(c => r[c])),
+      });
+
+      // Se a API não registrar (algumas builds antigas), aplica pelo menos o filtro:
+      if (ws.getTable && !ws.getTable(tableName)) {
+        console.warn('[ExcelJS] Tabela não registrada; aplicando autoFilter como fallback.');
+        ws.autoFilter = fullRange;
+      }
+    } else {
+      console.warn('[ExcelJS] addTable não disponível nesta build; aplicando autoFilter.');
+      ws.autoFilter = fullRange;
+    }
+  } catch (e) {
+    console.error('[ExcelJS] Falha ao criar Tabela:', e);
+    ws.autoFilter = fullRange; // fallback
+  }
+
+  // Freeze header
+  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 1 }];
+
+  // Largura automática
   columns.forEach((c, i) => {
     const col = ws.getColumn(i + 1);
     const maxLen = Math.max(
@@ -157,6 +254,13 @@ async function toExcelSimple(columns, rows) {
     );
     col.width = Math.min(60, Math.max(10, Math.ceil(maxLen * 0.9)));
   });
+
+  // Formatação
+  const colIndex = (name) => columns.findIndex(c => c.toUpperCase() === name.toUpperCase()) + 1;
+  const idxData = colIndex('DATA');
+  if (idxData > 0) ws.getColumn(idxData).numFmt = 'dd/mm/yyyy';
+  const idxTotDesc = colIndex('TOT.DESC');
+  if (idxTotDesc > 0) ws.getColumn(idxTotDesc).numFmt = '#,##0.00';
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], {
@@ -205,7 +309,7 @@ async function processFile(file) {
     setProgress(i + 1, total);
   }
 
-  // Consolida e trata (antes de projetar as 5 colunas)
+  // Consolida e trata
   let { columns, rows: aligned } = consolidateRows(rows);
   aligned = normalizeNumericColumns(aligned, columns);
   aligned = normalizeNullsToZero(aligned, columns);
@@ -213,69 +317,74 @@ async function processFile(file) {
   return { columns, rows: aligned };
 }
 
-// =================== Eventos da UI (hotfix) =====================
+// =================== Eventos da UI =====================
 let lastCSVBlob = null;
 let lastXLSXBlob = null;
 
-// Habilita/desabilita o botão Iniciar e atualiza status
 function updateStartState() {
   const hasFile = $file && $file.files && $file.files.length > 0;
   $start.disabled = !hasFile;
   setStatus(hasFile ? `Arquivo selecionado: <b>${$file.files[0].name}</b>` : 'Aguardando arquivo…', hasFile ? 'ok' : '');
 }
 
-// Registrar múltiplos eventos para garantir em qualquer navegador/host
 $file.addEventListener('change', updateStartState);
 $file.addEventListener('input', updateStartState);
 $file.addEventListener('click', () => setTimeout(updateStartState, 0));
 document.addEventListener('DOMContentLoaded', updateStartState);
 
-// Iniciar processamento
 $start.addEventListener('click', async () => {
   const hasFile = $file && $file.files && $file.files.length > 0;
   if (!hasFile) { updateStartState(); return; }
 
-  $start.disabled = true; 
-  $dlCsv.disabled = true; 
+  $start.disabled = true;
+  $dlCsv.disabled = true;
   $dlXlsx.disabled = true;
 
   setProgress(0, 100);
   setStatus('Processando… isso pode levar alguns segundos em arquivos grandes.');
 
   try {
-    // 1) Trata o CSV “bagunçado” em blocos
+    // garante ExcelJS antes de criar XLSX
+    try {
+      await ensureExcelJS();
+      $dlXlsx.style.display = '';
+    } catch (e) {
+      console.warn('[ExcelJS] indisponível. Gerarei apenas CSV.', e.message);
+    }
+
+    // 1) Trata o CSV
     const { columns, rows } = await processFile($file.files[0]);
 
-    // 2) === PROJEÇÃO: mantém só as 5 colunas desejadas, na ordem pedida ===
-    const present = new Map(columns.map(c => [normKey(c), c]));  // mapa: chave normalizada -> nome real
-    const outCols = [...KEEP_COLS];                               // nomes finais
+    // 2) Projeção: 5 colunas
+    const present = new Map(columns.map(c => [normKey(c), c]));
+    const outCols = [...KEEP_COLS];
     const outRows = rows.map(r => {
       const obj = {};
       for (const wanted of KEEP_COLS) {
-        const actual = present.get(normKey(wanted));              // nome real no arquivo equivalente
+        const actual = present.get(normKey(wanted));
         const val = actual ? r[actual] : 0;
         obj[wanted] = (val === undefined || val === null || String(val).trim() === '') ? 0 : val;
       }
       return obj;
     });
 
-    // 3) CSV (apenas as 5 colunas)
+    // 3) CSV
     const csvText = toCSV(outCols, outRows, CSV_DELIMITER);
     lastCSVBlob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    $dlCsv.disabled = false;
 
-    // 4) Excel simples (sem Tabela, como você fará manualmente)
+    // 4) XLSX com Tabela (se ExcelJS disponível)
     if (window.ExcelJS) {
-      lastXLSXBlob = await toExcelSimple(outCols, outRows);
+      lastXLSXBlob = await toExcelWithTable(outCols, outRows, 'Tabela_dados');
       $dlXlsx.disabled = false;
       $dlXlsx.style.display = '';
       setStatus(`Finalizado! Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
     } else {
       lastXLSXBlob = null;
       $dlXlsx.style.display = 'none';
-      setStatus(`Finalizado! Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
+      setStatus(`Finalizado (sem ExcelJS). CSV pronto. Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
     }
 
-    $dlCsv.disabled = false;
     setProgress(100, 100);
   } catch (err) {
     console.error(err);
