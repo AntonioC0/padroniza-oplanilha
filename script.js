@@ -3,7 +3,7 @@ const CSV_DELIMITER = ';';                           // Troque para ',' se o seu
 const FILENAME_BASE = 'Quebra de Transporte';
 
 // === Manter apenas estas colunas (ordem e nomes exatos) ===
-const KEEP_COLS = ['DATA', 'DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC'];
+const KEEP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'DIF'];
 
 // Nomes da planilha/arquivo Excel
 const EXCEL_SHEET = 'Base_Limpa'; // cria planilha e Tabela "Tabela_dados" dentro dela
@@ -16,13 +16,16 @@ const $status = document.getElementById('status');
 const $dlCsv  = document.getElementById('dlCsv');
 const $dlXlsx = document.getElementById('dlXlsx');
 
+// ======== Remover o botão CSV (oculta e não gera CSV) ========
+if ($dlCsv) $dlCsv.style.display = 'none';
+
 // =================== Loader dinâmico do ExcelJS (sem HTML) ===================
 let exceljsLoading = null;
 async function ensureExcelJS() {
   if (window.ExcelJS) return 'already-loaded';
   if (exceljsLoading) return exceljsLoading;
 
-  // CDN primário (pode trocar para unpkg se preferir)
+  // CDN (pode trocar para unpkg se preferir)
   const CDN = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
 
   exceljsLoading = new Promise((resolve, reject) => {
@@ -30,14 +33,9 @@ async function ensureExcelJS() {
     s.src = CDN;
     s.async = true;
     s.onload = () => {
-      // Checagens mínimas
       const ok = !!(window.ExcelJS && window.ExcelJS.Workbook);
-      if (!ok) {
-        reject(new Error('ExcelJS carregado mas objeto inválido.'));
-        return;
-      }
+      if (!ok) { reject(new Error('ExcelJS carregado mas objeto inválido.')); return; }
       try {
-        // Verifica suporte a addTable
         const testWb = new window.ExcelJS.Workbook();
         const testWs = testWb.addWorksheet('test');
         const supportsTable = typeof testWs.addTable === 'function';
@@ -64,20 +62,19 @@ function setProgress(value, max = 100) {
   $bar.style.width = pct + '%';
 }
 
-// Na carga da página, tenta baixar o ExcelJS e exibir o botão XLSX
 window.addEventListener('load', async () => {
   try {
     await ensureExcelJS();           // baixa ExcelJS
     $dlXlsx.style.display = '';      // mostra botão XLSX
   } catch (e) {
     console.warn('[ExcelJS] não carregado:', e.message);
-    $dlXlsx.style.display = 'none';  // mantém oculto se falhar
+    $dlXlsx.style.display = 'none';
   }
 });
 
 // =================== Parsing/Tratamento ==============
 
-// Normaliza chave de coluna (para casar nomes equivalentes como "TOT.DESC", "Tot_Desc", "tot desc")
+// Normaliza chave de coluna (para casar nomes equivalentes como "DIF", "Tot_Desc", "tot desc")
 const normKey = (s) => String(s || '')
   .toUpperCase()
   .replace(/\s+/g, '')
@@ -166,22 +163,32 @@ function normalizeNullsToZero(rows, columns) {
   });
 }
 
-function toCSV(columns, rows, delimiter = CSV_DELIMITER) {
-  const esc = (v) => {
-    if (v === null || v === undefined) v = '';
-    let s = String(v);
-    if (s.includes('"') || s.includes(delimiter) || /\r|\n/.test(s)) {
-      s = '"' + s.replace(/"/g, '""') + '"';
-    }
-    return s;
-  };
-  let out = '';
-  out += columns.map(esc).join(delimiter) + '\r\n';
+// ------------- Agregação por DESCRICAO + UNID.ORIGEM + UNID.DESTINO -------------
+const GROUP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO'];
+const SUM_COL    = 'DIF';
+
+function aggregateByGroup(rows) {
+  const map = new Map();
   for (const r of rows) {
-    out += columns.map(c => esc(r[c])).join(delimiter) + '\r\n';
+    const key = GROUP_COLS.map(c => String(r[c] ?? '').trim().toUpperCase()).join('|');
+    const cur = map.get(key);
+    const addVal = Number(tryParseBrNumber(r[SUM_COL])) || 0;
+
+    if (!cur) {
+      const base = { ...r };
+      // DATA agregada perde sentido: defina como 0 (ou mude aqui para 'primeira' ou 'vazia')
+      if ('DATA' in base) base['DATA'] = 0;
+      base[SUM_COL] = addVal; // numérico, preserva sinal
+      map.set(key, base);
+    } else {
+      cur[SUM_COL] = (Number(cur[SUM_COL]) || 0) + addVal;
+    }
   }
-  return out;
+  // arredonda para 2 casas (se quiser)
+  return Array.from(map.values()).map(o => ({ ...o, [SUM_COL]: Number((o[SUM_COL] || 0).toFixed(2)) }));
 }
+
+// =================== CSV helper removido (não geramos CSV) ===================
 
 // Helper: letra da coluna (1->A etc.)
 function excelCol(n) {
@@ -228,7 +235,6 @@ async function toExcelWithTable(columns, rows, tableName = 'Tabela_dados') {
         rows: rows.map(r => columns.map(c => r[c])),
       });
 
-      // Se a API não registrar (algumas builds antigas), aplica pelo menos o filtro:
       if (ws.getTable && !ws.getTable(tableName)) {
         console.warn('[ExcelJS] Tabela não registrada; aplicando autoFilter como fallback.');
         ws.autoFilter = fullRange;
@@ -259,7 +265,7 @@ async function toExcelWithTable(columns, rows, tableName = 'Tabela_dados') {
   const colIndex = (name) => columns.findIndex(c => c.toUpperCase() === name.toUpperCase()) + 1;
   const idxData = colIndex('DATA');
   if (idxData > 0) ws.getColumn(idxData).numFmt = 'dd/mm/yyyy';
-  const idxTotDesc = colIndex('TOT.DESC');
+  const idxTotDesc = colIndex('DIF');
   if (idxTotDesc > 0) ws.getColumn(idxTotDesc).numFmt = '#,##0.00';
 
   const buf = await wb.xlsx.writeBuffer();
@@ -309,7 +315,7 @@ async function processFile(file) {
     setProgress(i + 1, total);
   }
 
-  // Consolida e trata
+  // Consolida e trata (antes de projetar as 5 colunas)
   let { columns, rows: aligned } = consolidateRows(rows);
   aligned = normalizeNumericColumns(aligned, columns);
   aligned = normalizeNullsToZero(aligned, columns);
@@ -318,7 +324,6 @@ async function processFile(file) {
 }
 
 // =================== Eventos da UI =====================
-let lastCSVBlob = null;
 let lastXLSXBlob = null;
 
 function updateStartState() {
@@ -337,7 +342,6 @@ $start.addEventListener('click', async () => {
   if (!hasFile) { updateStartState(); return; }
 
   $start.disabled = true;
-  $dlCsv.disabled = true;
   $dlXlsx.disabled = true;
 
   setProgress(0, 100);
@@ -349,7 +353,7 @@ $start.addEventListener('click', async () => {
       await ensureExcelJS();
       $dlXlsx.style.display = '';
     } catch (e) {
-      console.warn('[ExcelJS] indisponível. Gerarei apenas CSV.', e.message);
+      console.warn('[ExcelJS] indisponível. Não será possível gerar Excel.', e.message);
     }
 
     // 1) Trata o CSV
@@ -358,7 +362,7 @@ $start.addEventListener('click', async () => {
     // 2) Projeção: 5 colunas
     const present = new Map(columns.map(c => [normKey(c), c]));
     const outCols = [...KEEP_COLS];
-    const outRows = rows.map(r => {
+    const projectedRows = rows.map(r => {
       const obj = {};
       for (const wanted of KEEP_COLS) {
         const actual = present.get(normKey(wanted));
@@ -368,21 +372,19 @@ $start.addEventListener('click', async () => {
       return obj;
     });
 
-    // 3) CSV
-    const csvText = toCSV(outCols, outRows, CSV_DELIMITER);
-    lastCSVBlob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
-    $dlCsv.disabled = false;
+    // 3) AGREGAÇÃO (DESCRICAO + UNID.ORIGEM + UNID.DESTINO) somando DIF com sinal
+    const outRows = aggregateByGroup(projectedRows);
 
     // 4) XLSX com Tabela (se ExcelJS disponível)
     if (window.ExcelJS) {
       lastXLSXBlob = await toExcelWithTable(outCols, outRows, 'Tabela_dados');
       $dlXlsx.disabled = false;
       $dlXlsx.style.display = '';
-      setStatus(`Finalizado! Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
+      setStatus(`Finalizado! Linhas (após agregar): <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
     } else {
       lastXLSXBlob = null;
       $dlXlsx.style.display = 'none';
-      setStatus(`Finalizado (sem ExcelJS). CSV pronto. Linhas: <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
+      setStatus(`Erro: ExcelJS não disponível para gerar o arquivo Excel.`, 'err');
     }
 
     setProgress(100, 100);
@@ -394,16 +396,7 @@ $start.addEventListener('click', async () => {
   }
 });
 
-// Downloads
-$dlCsv.addEventListener('click', () => {
-  if (!lastCSVBlob) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(lastCSVBlob);
-  a.download = `${FILENAME_BASE}.csv`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-});
-
+// Download Excel
 $dlXlsx.addEventListener('click', () => {
   if (!lastXLSXBlob) return;
   const a = document.createElement('a');
@@ -412,3 +405,4 @@ $dlXlsx.addEventListener('click', () => {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
+``
