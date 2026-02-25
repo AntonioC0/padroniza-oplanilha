@@ -5,6 +5,14 @@ const FILENAME_BASE = 'Quebra de Transporte';
 // === Manter apenas estas colunas (ordem e nomes exatos) ===
 const KEEP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC'];
 
+// >>> ADICIONADO: Whitelist de DESCRICAO
+const ALLOWED_DESCRICOES = new Set([
+  'MILHO COMERCIAL T',
+  'SOJA CML TRANSG',
+  'TRIGO PÃO',
+  'TRIGO PAO',         // variação sem acento
+]);
+
 // Nomes da planilha/arquivo Excel
 const EXCEL_SHEET = 'Base_Limpa'; // cria planilha e Tabela "Tabela_dados" dentro dela
 
@@ -315,7 +323,7 @@ async function processFile(file) {
     setProgress(i + 1, total);
   }
 
-  // Consolida e trata (antes de projetar as 5 colunas)
+  // Consolida e trata (antes de projetar as 4 colunas)
   let { columns, rows: aligned } = consolidateRows(rows);
   aligned = normalizeNumericColumns(aligned, columns);
   aligned = normalizeNullsToZero(aligned, columns);
@@ -359,7 +367,7 @@ $start.addEventListener('click', async () => {
     // 1) Trata o CSV
     const { columns, rows } = await processFile($file.files[0]);
 
-    // 2) Projeção: 5 colunas
+    // 2) Projeção: 4 colunas
     const present = new Map(columns.map(c => [normKey(c), c]));
     const outCols = [...KEEP_COLS];
     const projectedRows = rows.map(r => {
@@ -372,15 +380,21 @@ $start.addEventListener('click', async () => {
       return obj;
     });
 
+    // >>> ADICIONADO: 2.1) Filtro pela DESCRICAO (mantém apenas os permitidos)
+    const filteredRows = projectedRows.filter(r => {
+      const v = String(r['DESCRICAO'] ?? '').trim().toUpperCase();
+      return ALLOWED_DESCRICOES.has(v);
+    });
+
     // 3) AGREGAÇÃO (DESCRICAO + UNID.ORIGEM + UNID.DESTINO) somando TOT.DESC com sinal
-    const outRows = aggregateByGroup(projectedRows);
+    const outRows = aggregateByGroup(filteredRows);
 
     // 4) XLSX com Tabela (se ExcelJS disponível)
     if (window.ExcelJS) {
       lastXLSXBlob = await toExcelWithTable(outCols, outRows, 'Tabela_dados');
       $dlXlsx.disabled = false;
       $dlXlsx.style.display = '';
-      setStatus(`Finalizado! Linhas (após agregar): <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
+      setStatus(`Finalizado! Linhas (após filtrar/agregar): <b>${outRows.length.toLocaleString('pt-BR')}</b> | Colunas: <b>${outCols.length}</b>.`, 'ok');
     } else {
       lastXLSXBlob = null;
       $dlXlsx.style.display = 'none';
