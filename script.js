@@ -3,7 +3,7 @@ const CSV_DELIMITER = ';';                           // Troque para ',' se o seu
 const FILENAME_BASE = 'Quebra de Transporte';
 
 // === Manter apenas estas colunas (ordem e nomes exatos) ===
-const KEEP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC'];
+const KEEP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'TOT.DESC', 'CFOP'];
 
 // >>> ADICIONADO: Whitelist de DESCRICAO
 const ALLOWED_DESCRICOES = new Set([
@@ -420,4 +420,5 @@ $dlXlsx.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 ``
+
 
