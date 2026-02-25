@@ -123,7 +123,7 @@ function isHeaderRowFirst3(values, expected = ['DATA', 'NUMCMP', 'PRT']) {
   return v[0] === expected[0] && v[1] === expected[1] && v[2] === expected[2];
 }
 
-const TEXT_LIKE = new Set(['PRT','UNID.ORIGEM','UNID.DESTINO','DESCRICAO','PLACA','CEP']);
+const TEXT_LIKE = new Set(['PRT','UNID.ORIGEM','UNID.DESTINO','DESCRICAO','PLACA','CEP', 'CFOP']);
 function tryParseBrNumber(s) {
   if (s === null || s === undefined) return s;
   const t = String(s).trim();
@@ -172,7 +172,7 @@ function normalizeNullsToZero(rows, columns) {
 }
 
 // ------------- Agregação por DESCRICAO + UNID.ORIGEM + UNID.DESTINO -------------
-const GROUP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO'];
+const GROUP_COLS = ['DESCRICAO', 'UNID.ORIGEM', 'UNID.DESTINO', 'CFOP'];
 const SUM_COL    = 'TOT.DESC';
 
 function aggregateByGroup(rows) {
@@ -420,3 +420,4 @@ $dlXlsx.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 ``
+
